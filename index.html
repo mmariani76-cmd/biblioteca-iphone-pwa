@@ -1245,7 +1245,12 @@ async function syncWithMac(){
     const macBooks=await r.json();
 
     // 2. Strip immagini base64 dai libri Mac (troppo pesanti per localStorage iPhone)
-    const macBooksStripped = macBooks.map(stripImages);
+    const macBooksStripped = macBooks.map(b => {
+      const out = {...b};
+      if((out.remoteImageUrl||'').startsWith('data:')) out.remoteImageUrl='';
+      if((out.thumbnailRemoteImageUrl||'').startsWith('data:')) out.thumbnailRemoteImageUrl='';
+      return out;
+    });
 
     // Merge: per ogni libro, vince il più recente (_updated timestamp)
     const localMap={};
