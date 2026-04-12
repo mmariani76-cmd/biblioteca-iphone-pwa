@@ -1536,12 +1536,22 @@ function toast(msg,type,dur){
 // INIT — asincrono per IndexedDB
 // ═══════════════════════════════════════════════════════════════
 async function initApp(){
-  // Carica libri da IndexedDB (migra automaticamente da localStorage se presente)
-  books = await loadBooks();
-
-  // Rimuovi spinner di caricamento
-  const overlay = document.getElementById('loading-overlay');
-  if(overlay) overlay.remove();
+  try{
+    // Carica libri da IndexedDB (migra automaticamente da localStorage se presente)
+    books = await loadBooks();
+  }catch(e){
+    console.error('Errore caricamento libri:', e);
+    // Fallback: prova localStorage direttamente
+    try{
+      books = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+    }catch(e2){
+      books = [];
+    }
+  }finally{
+    // Rimuovi spinner — sempre, anche in caso di errore
+    const overlay = document.getElementById('loading-overlay');
+    if(overlay) overlay.remove();
+  }
 
   // Render iniziale
   renderLibrary();
