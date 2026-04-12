@@ -178,6 +178,11 @@ body{font-family:-apple-system,sans-serif;background:var(--bg);color:var(--text)
 
 <!-- ── PAGE: Libreria ── -->
 <div class="page active" id="page-library">
+  <div id="loading-overlay" style="position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">
+    <div style="font-size:48px">📚</div>
+    <div style="font-size:16px;font-weight:700;color:var(--text)">Caricamento libreria…</div>
+    <div style="width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite"></div>
+  </div>
   <div class="search-bar">
     <input type="search" id="search-input" placeholder="Titolo, autore, ISBN…" oninput="onSearch()">
   </div>
@@ -344,17 +349,91 @@ function formatAuthors(a){
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // ═══════════════════════════════════════════════════════════════
-// STORAGE
+// STORAGE — IndexedDB (nessun limite di dimensione)
+// localStorage usato solo per settings (macUrl)
 // ═══════════════════════════════════════════════════════════════
-function loadBooks(){ try{ return JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]'); }catch(e){ return []; } }
-function saveBooks(books){ localStorage.setItem(STORAGE_KEY, JSON.stringify(books)); }
+const DB_NAME    = 'BibliotecaDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'books';
+let _idb = null;
+
+function openIDB(){
+  return new Promise((resolve, reject) => {
+    if(_idb){ resolve(_idb); return; }
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains(STORE_NAME)){
+        db.createObjectStore(STORE_NAME, {keyPath:'_id'});
+      }
+    };
+    req.onsuccess = e => { _idb = e.target.result; resolve(_idb); };
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+async function loadBooks(){
+  try{
+    const db = await openIDB();
+    return new Promise((resolve, reject) => {
+      const tx  = db.transaction(STORE_NAME, 'readonly');
+      const req = tx.objectStore(STORE_NAME).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror   = () => reject(req.error);
+    });
+  }catch(e){
+    console.error('IndexedDB loadBooks error:', e);
+    // Fallback: prova localStorage (migrazione da versione precedente)
+    try{
+      const old = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+      if(old.length > 0){
+        console.log('Migrazione da localStorage a IndexedDB:', old.length, 'libri');
+        await saveBooks(old);
+        localStorage.removeItem(STORAGE_KEY);
+        return old;
+      }
+    }catch(e2){}
+    return [];
+  }
+}
+
+async function saveBooks(booksToSave){
+  try{
+    const db = await openIDB();
+    return new Promise((resolve, reject) => {
+      const tx    = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      // Cancella tutto e riscrivi (operazione atomica)
+      const clearReq = store.clear();
+      clearReq.onsuccess = () => {
+        let pending = booksToSave.length;
+        if(pending === 0){ resolve(); return; }
+        booksToSave.forEach(book => {
+          const b = {...book};
+          // Rimuovi immagini base64 (mantieni URL remoti)
+          if((b.remoteImageUrl||'').startsWith('data:')) b.remoteImageUrl='';
+          if((b.thumbnailRemoteImageUrl||'').startsWith('data:')) b.thumbnailRemoteImageUrl='';
+          const r = store.put(b);
+          r.onsuccess = () => { pending--; if(pending===0) resolve(); };
+          r.onerror   = () => { pending--; if(pending===0) resolve(); };
+        });
+      };
+      clearReq.onerror = () => reject(clearReq.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }catch(e){
+    console.error('IndexedDB saveBooks error:', e);
+    throw e;
+  }
+}
+
 function loadMacUrl(){ return localStorage.getItem(MACURL_KEY)||''; }
 function saveMacUrl(url){ localStorage.setItem(MACURL_KEY, url.trim()); macBaseUrl=url.trim(); }
 
 // ═══════════════════════════════════════════════════════════════
 // STATO GLOBALE
 // ═══════════════════════════════════════════════════════════════
-let books = loadBooks();
+let books = [];
 let filterStatus = 'all';
 let filterGenre  = 'all';
 let sortBy       = 'title';
@@ -606,7 +685,7 @@ function setRating(n){
   document.querySelectorAll('.star').forEach(s=>s.classList.toggle('on', Number(s.dataset.val)<=n));
 }
 
-function saveEdit(){
+async function saveEdit(){
   const id = document.getElementById('ef-_id').value;
   const idx = books.findIndex(b=>b._id===id);
   if(idx<0) return;
@@ -621,7 +700,7 @@ function saveEdit(){
   updated.userRating    = document.getElementById('ef-userRating').value;
   updated._updated = Date.now();
   books[idx]=updated;
-  saveBooks(books);
+  await saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -629,10 +708,10 @@ function saveEdit(){
   toast('📖 Libro aggiornato!');
 }
 
-function deleteBook(id){
+async function deleteBook(id){
   if(!confirm('Eliminare questo libro dalla biblioteca?')) return;
   books=books.filter(b=>b._id!==id);
-  saveBooks(books);
+  await saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -720,13 +799,13 @@ function addFromSearch(i){
   confirmAddBook(b);
 }
 
-function confirmAddBook(b){
+async function confirmAddBook(b){
   const dup = books.some(x=>(x.isbn13&&x.isbn13===b.isbn13)||(x.isbn10&&x.isbn10===b.isbn10)||
     (x.title&&x.title.toLowerCase()===(b.title||'').toLowerCase()&&x.authors===b.authors));
   if(dup&&!confirm('"'+b.title+'" sembra già presente. Aggiungere comunque?')) return;
   const book = {...b, _id:generateId(), _added:Date.now()};
   books.push(book);
-  saveBooks(books);
+  await saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -734,7 +813,7 @@ function confirmAddBook(b){
   toast('📚 "'+b.title+'" aggiunto!');
 }
 
-function addManual(){
+async function addManual(){
   const title = document.getElementById('m-title').value.trim();
   if(!title){ toast('Inserisci il titolo','warn'); return; }
   const book = {
@@ -750,7 +829,7 @@ function addManual(){
     remoteImageUrl:'', description:''
   };
   books.push(book);
-  saveBooks(books);
+  await saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -994,7 +1073,7 @@ function importJSON(input){
   reader.readAsText(file,'utf-8');
 }
 
-function mergeImport(newBooks){
+async function mergeImport(newBooks){
   const existingIsbns=new Set(books.map(b=>b.isbn13).filter(Boolean));
   const existingTitles=new Set(books.map(b=>(b.title||'').toLowerCase()));
   const toAdd=newBooks.filter(b=>{
@@ -1003,7 +1082,7 @@ function mergeImport(newBooks){
     return true;
   }).map(b=>({...b,_id:b._id||generateId()}));
   books=[...books,...toAdd];
-  saveBooks(books);
+  await saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -1165,11 +1244,14 @@ async function syncWithMac(){
     if(!r.ok) throw new Error('HTTP '+r.status);
     const macBooks=await r.json();
 
-    // 2. Merge: per ogni libro, vince il più recente (_updated timestamp)
+    // 2. Strip immagini base64 dai libri Mac (troppo pesanti per localStorage iPhone)
+    const macBooksStripped = macBooks.map(stripImages);
+
+    // Merge: per ogni libro, vince il più recente (_updated timestamp)
     const localMap={};
     books.forEach(b=>{if(b._id)localMap[b._id]=b;});
     const macMap={};
-    macBooks.forEach(b=>{if(b._id)macMap[b._id]=b;});
+    macBooksStripped.forEach(b=>{if(b._id)macMap[b._id]=b;});
 
     // Unione
     const allIds=new Set([...Object.keys(localMap),...Object.keys(macMap)]);
@@ -1181,7 +1263,7 @@ async function syncWithMac(){
       else merged.push((l._updated||0)>=(m._updated||0)?l:m);
     });
 
-    // 3. Invia libri locali non presenti o più recenti al Mac
+    // 3. Invia al Mac solo libri modificati localmente (con immagini originali se presenti)
     const toSend=merged.filter(b=>{
       const m=macMap[b._id];
       return !m||(b._updated||0)>(m._updated||0);
@@ -1197,7 +1279,7 @@ async function syncWithMac(){
     }
 
     books=merged;
-    saveBooks(books);
+    await saveBooks(books);
     dirty=false;
     updateStatusBar();
     renderLibrary();
@@ -1248,22 +1330,34 @@ function toast(msg,type,dur){
 }
 
 // ═══════════════════════════════════════════════════════════════
-// INIT
+// INIT — asincrono per IndexedDB
 // ═══════════════════════════════════════════════════════════════
-renderLibrary();
-if(macBaseUrl) document.getElementById('mac-url-input').value=macBaseUrl;
+async function initApp(){
+  // Carica libri da IndexedDB (migra automaticamente da localStorage se presente)
+  books = await loadBooks();
 
-// Rilevamento Mac in background
-detectMac().then(ok=>{
-  updateStatusBar();
-  if(ok&&dirty) syncWithMac();
-});
-setInterval(()=>{
+  // Rimuovi spinner di caricamento
+  const overlay = document.getElementById('loading-overlay');
+  if(overlay) overlay.remove();
+
+  // Render iniziale
+  renderLibrary();
+  if(macBaseUrl) document.getElementById('mac-url-input').value=macBaseUrl;
+
+  // Rilevamento Mac in background
   detectMac().then(ok=>{
     updateStatusBar();
-    if(ok&&dirty) syncWithMac().catch(()=>{});
+    if(ok&&dirty) syncWithMac();
   });
-},30000);
+  setInterval(()=>{
+    detectMac().then(ok=>{
+      updateStatusBar();
+      if(ok&&dirty) syncWithMac().catch(()=>{});
+    });
+  },30000);
+}
+
+initApp();
 
 </script>
 </body>
