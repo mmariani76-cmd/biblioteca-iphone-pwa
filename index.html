@@ -1177,34 +1177,47 @@ function downloadFile(content,filename,type){
 
 
 // ══════════════════════════════════════════════════════════════════════════
-// SCANNER — Quagga2 da CDN (caricato on-demand) per barcode ISBN
-//           jsQR inline per QR Mac URL
+// ══════════════════════════════════════════════════════════════════════════
+// SCANNER — getUserMedia + canvas, nessuna dipendenza esterna
+// jsQR (inline) per QR code Mac URL
+// Scansione manuale a riga centrale per barcode EAN-13 (ISBN)
 // ══════════════════════════════════════════════════════════════════════════
 let _scannerMode = 'isbn';
-let _quaggaLoaded = false, _quaggaLoading = false;
-let _quaggaActive = false;
-
-function loadQuagga(callback){
-  if(_quaggaLoaded){ callback(); return; }
-  if(_quaggaLoading){ setTimeout(()=>loadQuagga(callback), 200); return; }
-  _quaggaLoading = true;
-  document.getElementById('qr-status').textContent = 'Caricamento scanner…';
-  const s = document.createElement('script');
-  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js';
-  s.onload = ()=>{ _quaggaLoaded=true; _quaggaLoading=false; callback(); };
-  s.onerror = ()=>{ _quaggaLoading=false;
-    document.getElementById('qr-status').textContent='❌ Scanner non disponibile'; };
-  document.head.appendChild(s);
-}
 
 function openScanner(mode){
   _scannerMode = mode||'isbn';
   document.getElementById('scanner-title').textContent =
-    mode==='mac'?'Inquadra QR del Mac':'Scansiona codice a barre';
+    mode==='mac' ? 'Inquadra QR del Mac' : 'Scansiona codice a barre ISBN';
   document.getElementById('qr-modal').style.display='flex';
   document.getElementById('qr-status').textContent='Avvio fotocamera…';
-  if(mode==='mac') startJsQRScanner();
-  else loadQuagga(startQuaggaScanner);
+  startScanner();
+}
+
+function startScanner(){
+  const status = document.getElementById('qr-status');
+  navigator.mediaDevices.getUserMedia({
+    video:{
+      facingMode: { ideal:'environment' },
+      width:  { ideal: 1920 },
+      height: { ideal: 1080 },
+    }
+  }).then(stream=>{
+    qrStream = stream;
+    const v = document.getElementById('qr-video');
+    v.srcObject = stream;
+    v.setAttribute('playsinline','');
+    v.setAttribute('autoplay','');
+    v.setAttribute('muted','');
+    v.play().catch(()=>{});
+    status.textContent = _scannerMode==='mac'
+      ? 'Inquadra il QR del Mac…'
+      : 'Inquadra il codice a barre del libro…';
+    v.addEventListener('loadedmetadata', ()=>{ scanFrame(); }, { once:true });
+  }).catch(err=>{
+    status.textContent = err.name==='NotAllowedError'
+      ? '❌ Permesso fotocamera negato — Impostazioni → Safari → Fotocamera'
+      : '❌ '+err.message;
+  });
 }
 
 function validateEAN13(code){
@@ -1214,86 +1227,168 @@ function validateEAN13(code){
   return (10-(sum%10))%10===parseInt(code[12]);
 }
 
-function startQuaggaScanner(){
-  const video=document.getElementById('qr-video');
-  const status=document.getElementById('qr-status');
-  Quagga.init({
-    inputStream:{name:'Live',type:'LiveStream',target:video,
-      constraints:{width:{min:640,ideal:1280},height:{min:480,ideal:720},
-        facingMode:{ideal:'environment'}}},
-    locator:{patchSize:'medium',halfSample:true},
-    numOfWorkers:0, frequency:10,
-    decoder:{readers:['ean_reader','ean_8_reader','code_128_reader','upc_reader'],multiple:false},
-    locate:true
-  }, function(err){
-    if(err){
-      console.error('Quagga init error:',err);
-      status.textContent='⚠️ Errore scanner — uso modalità QR';
-      startJsQRScanner(); return;
-    }
-    Quagga.start();
-    _quaggaActive=true;
-    status.textContent='Inquadra il codice a barre del libro…';
-  });
-  Quagga.onDetected(function(result){
-    const code=result&&result.codeResult&&result.codeResult.code;
-    if(!code) return;
-    const clean=code.replace(/[^0-9]/g,'');
-    if(clean.length<8||clean.length>14) return;
-    if(clean.length===13&&!validateEAN13(clean)) return;
-    closeScanner();
-    searchAndPropose(clean);
-  });
-}
-
-function startJsQRScanner(){
-  const status=document.getElementById('qr-status');
-  navigator.mediaDevices.getUserMedia({
-    video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}
-  }).then(stream=>{
-    qrStream=stream;
-    const v=document.getElementById('qr-video');
-    v.srcObject=stream; v.play();
-    status.textContent=_scannerMode==='mac'?'Inquadra il QR del Mac…':'Inquadra il codice…';
-    scanJsQRFrame();
-  }).catch(err=>{
-    status.textContent=err.name==='NotAllowedError'
-      ?'❌ Permesso fotocamera negato — Impostazioni → Safari → Fotocamera'
-      :'❌ '+err.message;
-  });
-}
-
-function scanJsQRFrame(){
+function scanFrame(){
   if(!qrStream) return;
-  const v=document.getElementById('qr-video');
-  const c=document.getElementById('qr-canvas');
-  if(v.readyState===v.HAVE_ENOUGH_DATA){
-    c.width=v.videoWidth; c.height=v.videoHeight;
-    const ctx=c.getContext('2d');
-    ctx.drawImage(v,0,0,c.width,c.height);
-    const img=ctx.getImageData(0,0,c.width,c.height);
-    const code=jsQR(img.data,img.width,img.height,{inversionAttempts:'dontInvert'});
-    if(code&&code.data){
-      const val=code.data.trim();
-      if(_scannerMode==='mac'&&val.startsWith('https://')){
+  const v = document.getElementById('qr-video');
+  const c = document.getElementById('qr-canvas');
+
+  if(v.readyState >= v.HAVE_ENOUGH_DATA && v.videoWidth > 0){
+    const W = v.videoWidth, H = v.videoHeight;
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(v, 0, 0, W, H);
+
+    // 1. Tenta jsQR (QR code e talvolta EAN)
+    const img = ctx.getImageData(0, 0, W, H);
+    const qr = jsQR(img.data, W, H, { inversionAttempts:'dontInvert' });
+    if(qr && qr.data){
+      const val = qr.data.trim();
+      if(_scannerMode==='mac' && val.startsWith('https://')){
         closeScanner(); saveMacUrl(val);
-        document.getElementById('mac-url-input').value=val;
+        document.getElementById('mac-url-input').value = val;
         toast('✅ URL Mac acquisito!');
-        setTimeout(testAndSync,400); return;
-      } else if(/^\d{8,14}$/.test(val.replace(/[-\s]/g,''))){
-        closeScanner(); searchAndPropose(val.replace(/[-\s]/g,'')); return;
+        setTimeout(testAndSync, 400); return;
+      }
+      const digits = val.replace(/[-\s]/g,'');
+      if(/^\d{8,14}$/.test(digits) && validateEAN13(digits)){
+        closeScanner(); searchAndPropose(digits); return;
       }
     }
+
+    // 2. Scansione manuale EAN-13: analizza 5 righe orizzontali centrali
+    // Cerca il pattern di barre bianche/nere tipico dell'EAN-13
+    const isbn = detectEAN13fromCanvas(ctx, W, H);
+    if(isbn){ closeScanner(); searchAndPropose(isbn); return; }
   }
-  qrTimer=setTimeout(scanJsQRFrame,150);
+
+  qrTimer = setTimeout(scanFrame, 100);
+}
+
+function detectEAN13fromCanvas(ctx, W, H){
+  // Prova su 5 righe orizzontali nella fascia centrale
+  const rows = [0.4, 0.45, 0.5, 0.55, 0.6].map(r => Math.floor(H*r));
+  for(const y of rows){
+    const row = ctx.getImageData(0, y, W, 1).data;
+    const code = decodeEAN13row(row, W);
+    if(code) return code;
+  }
+  return null;
+}
+
+function decodeEAN13row(data, W){
+  // Converti a grayscale e poi a binario
+  const gray = new Uint8Array(W);
+  for(let x=0; x<W; x++){
+    const i = x*4;
+    gray[x] = (data[i]*299 + data[i+1]*587 + data[i+2]*114) / 1000;
+  }
+  // Threshold adattivo
+  let sum=0; for(let x=0;x<W;x++) sum+=gray[x];
+  const thresh = sum/W;
+  const binary = new Uint8Array(W);
+  for(let x=0;x<W;x++) binary[x] = gray[x] < thresh ? 1 : 0;
+
+  // Cerca sequenze di barre (run-length encoding)
+  const runs = [];
+  let cur = binary[0], count = 1;
+  for(let x=1; x<W; x++){
+    if(binary[x]===cur) count++;
+    else{ runs.push({v:cur, n:count}); cur=binary[x]; count=1; }
+  }
+  runs.push({v:cur, n:count});
+
+  // Cerca il pattern di start EAN-13: barra-spazio-barra (1-1-1)
+  // e prova a decodificare
+  for(let i=0; i<runs.length-60; i++){
+    if(runs[i].v!==1) continue;
+    const unitW = runs[i].n;
+    if(unitW < 1) continue;
+    // Pattern start: 1,1,1
+    if(Math.abs(runs[i+1].n - unitW) > unitW*0.5) continue;
+    if(Math.abs(runs[i+2].n - unitW) > unitW*0.5) continue;
+    const isbn = tryDecodeEAN13(runs, i, unitW);
+    if(isbn) return isbn;
+  }
+  return null;
+}
+
+// Tabella EAN-13 (pattern L, G, R per ogni cifra)
+const _EAN_L = ['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011'];
+const _EAN_G = ['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111'];
+const _EAN_R = ['1110010','1100110','1101100','1000010','1011100','1001110','1010000','1000100','1001000','1110100'];
+const _EAN_FIRST = ['LLLLLL','LLGLGG','LLGGLG','LLGGGL','LGLLGG','LGGLLG','LGGGLL','LGLGLG','LGLGGL','LGGLGL'];
+
+function tryDecodeEAN13(runs, startIdx, unit){
+  try{
+    let i = startIdx + 3; // dopo start guard
+    const digits = [];
+    // Decodifica 6 digit sinistra
+    const patterns_l = [];
+    for(let d=0; d<6; d++){
+      if(i+3 >= runs.length) return null;
+      const p = runsToPattern(runs, i, unit, 4);
+      if(!p) return null;
+      const {digit, type} = matchEAN(p);
+      if(digit < 0) return null;
+      digits.push(digit);
+      patterns_l.push(type);
+      i += 4;
+    }
+    // Middle guard: 01010
+    if(i+4 >= runs.length) return null;
+    i += 5;
+    // Decodifica 6 digit destra
+    for(let d=0; d<6; d++){
+      if(i+3 >= runs.length) return null;
+      const p = runsToPattern(runs, i, unit, 4);
+      if(!p) return null;
+      const {digit} = matchEAN(p, true);
+      if(digit < 0) return null;
+      digits.push(digit);
+      i += 4;
+    }
+    // Ricava prima cifra da pattern L/G sinistra
+    const firstPattern = patterns_l.join('');
+    const firstDigit = _EAN_FIRST.indexOf(firstPattern);
+    if(firstDigit < 0) return null;
+    const fullCode = String(firstDigit) + digits.join('');
+    if(fullCode.length !== 13) return null;
+    if(!validateEAN13(fullCode)) return null;
+    return fullCode;
+  }catch(e){ return null; }
+}
+
+function runsToPattern(runs, i, unit, count){
+  if(i+count-1 >= runs.length) return null;
+  let pat='';
+  for(let k=0;k<count;k++){
+    const n = Math.round(runs[i+k].n / unit);
+    if(n<1||n>4) return null;
+    pat += runs[i+k].v===1 ? '1'.repeat(n) : '0'.repeat(n);
+  }
+  return pat.length >= 7 ? pat.substring(0,7) : null;
+}
+
+function matchEAN(pat, rightHalf=false){
+  if(!pat) return {digit:-1,type:'L'};
+  if(!rightHalf){
+    for(let d=0;d<10;d++){
+      if(_EAN_L[d]===pat) return {digit:d,type:'L'};
+      if(_EAN_G[d]===pat) return {digit:d,type:'G'};
+    }
+  } else {
+    for(let d=0;d<10;d++){
+      if(_EAN_R[d]===pat) return {digit:d,type:'R'};
+    }
+  }
+  return {digit:-1,type:'L'};
 }
 
 function closeScanner(){
-  if(_quaggaActive){ try{Quagga.stop();}catch(e){} _quaggaActive=false; }
-  if(qrTimer){clearTimeout(qrTimer);qrTimer=null;}
-  if(qrStream){qrStream.getTracks().forEach(t=>t.stop());qrStream=null;}
-  const video=document.getElementById('qr-video');
-  if(video) video.srcObject=null;
+  if(qrTimer){clearTimeout(qrTimer); qrTimer=null;}
+  if(qrStream){qrStream.getTracks().forEach(t=>t.stop()); qrStream=null;}
+  const v = document.getElementById('qr-video');
+  if(v){ v.pause(); v.srcObject=null; }
   document.getElementById('qr-modal').style.display='none';
 }
 
