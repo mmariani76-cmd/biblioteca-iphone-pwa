@@ -178,9 +178,7 @@ body{font-family:-apple-system,sans-serif;background:var(--bg);color:var(--text)
 
 <!-- ── PAGE: Libreria ── -->
 <div class="page active" id="page-library">
-  <div id="loading-overlay" style="position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">
-    <div style="font-size:48px">📚</div>
-    <div style="font-size:16px;font-weight:700;color:var(--text)">Caricamento libreria…</div>
+<div style="font-size:16px;font-weight:700;color:var(--text)">Caricamento libreria…</div>
     <div style="width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite"></div>
   </div>
   <div class="search-bar">
@@ -349,90 +347,40 @@ function formatAuthors(a){
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // ═══════════════════════════════════════════════════════════════
-// STORAGE — IndexedDB (nessun limite di dimensione)
-// localStorage usato solo per settings (macUrl)
 // ═══════════════════════════════════════════════════════════════
-const DB_NAME    = 'BibliotecaDB';
-const DB_VERSION = 1;
-const STORE_NAME = 'books';
-let _idb = null;
+// STORAGE — localStorage sincrono (semplice e affidabile su Safari iOS)
+// ═══════════════════════════════════════════════════════════════
+function loadBooks(){
+  try{ return JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]'); }
+  catch(e){ return []; }
+}
 
-function openIDB(){
-  return new Promise((resolve, reject) => {
-    if(_idb){ resolve(_idb); return; }
-    const timeout = setTimeout(() => reject(new Error('IndexedDB timeout')), 3000);
-    try{
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = e => {
-        const db = e.target.result;
-        if(!db.objectStoreNames.contains(STORE_NAME)){
-          db.createObjectStore(STORE_NAME, {keyPath:'_id'});
-        }
-      };
-      req.onsuccess = e => { clearTimeout(timeout); _idb = e.target.result; resolve(_idb); };
-      req.onerror   = e => { clearTimeout(timeout); reject(e.target.error); };
-      req.onblocked = () => { clearTimeout(timeout); reject(new Error('IndexedDB blocked')); };
-    }catch(e){ clearTimeout(timeout); reject(e); }
+function saveBooks(books){
+  const stripped = books.map(b => {
+    const out = {...b};
+    if((out.remoteImageUrl||'').startsWith('data:')) out.remoteImageUrl = '';
+    if((out.thumbnailRemoteImageUrl||'').startsWith('data:')) out.thumbnailRemoteImageUrl = '';
+    delete out.description;
+    return out;
   });
-}
-
-async function loadBooks(){
   try{
-    const db = await openIDB();
-    return await new Promise((resolve, reject) => {
-      try{
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const req = tx.objectStore(STORE_NAME).getAll();
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror   = () => reject(req.error);
-        tx.onerror    = () => reject(tx.error);
-      }catch(e){ reject(e); }
-    });
-  }catch(e){
-    console.warn('IndexedDB non disponibile, uso localStorage:', e.message);
-    try{ return JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]'); }catch(e2){ return []; }
-  }
-}
-
-async function saveBooks(booksToSave){
-  try{
-    const db = await openIDB();
-    await new Promise((resolve, reject) => {
-      try{
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const clearReq = store.clear();
-        clearReq.onsuccess = () => {
-          let pending = booksToSave.length;
-          if(pending === 0){ resolve(); return; }
-          booksToSave.forEach(book => {
-            const b = {...book};
-            if((b.remoteImageUrl||'').startsWith('data:')) b.remoteImageUrl='';
-            if((b.thumbnailRemoteImageUrl||'').startsWith('data:')) b.thumbnailRemoteImageUrl='';
-            const r = store.put(b);
-            r.onsuccess = () => { pending--; if(pending===0) resolve(); };
-            r.onerror   = () => { pending--; if(pending===0) resolve(); };
-          });
-        };
-        clearReq.onerror = () => reject(clearReq.error);
-        tx.onerror = () => reject(tx.error);
-      }catch(e){ reject(e); }
-    });
-    return;
-  }catch(e){
-    console.warn('IndexedDB saveBooks fallback a localStorage:', e.message);
-  }
-  try{
-    const stripped = booksToSave.map(b => {
-      const out = {...b};
-      if((out.remoteImageUrl||'').startsWith('data:')) out.remoteImageUrl='';
-      if((out.thumbnailRemoteImageUrl||'').startsWith('data:')) out.thumbnailRemoteImageUrl='';
-      return out;
-    });
     localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
-  }catch(e2){ console.error('Anche localStorage ha fallito:', e2); }
+  }catch(e){
+    if(e.name==='QuotaExceededError'||String(e).includes('quota')){
+      const minimal = books.map(b=>({
+        _id:b._id,title:b.title,authors:b.authors,
+        isbn13:b.isbn13,isbn10:b.isbn10,publishers:b.publishers,
+        readingStatus:b.readingStatus,userRating:b.userRating,
+        releaseYear:b.releaseYear,categories:b.categories,pages:b.pages,
+        remoteImageUrl:(b.remoteImageUrl||'').startsWith('data:')?'':(b.remoteImageUrl||''),
+        thumbnailRemoteImageUrl:(b.thumbnailRemoteImageUrl||'').startsWith('data:')?'':(b.thumbnailRemoteImageUrl||''),
+        _updated:b._updated,_added:b._added
+      }));
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(minimal)); }
+      catch(e2){ console.error('Storage pieno:', e2); }
+    }
+  }
 }
-
 
 function loadMacUrl(){ return localStorage.getItem(MACURL_KEY)||''; }
 function saveMacUrl(url){ localStorage.setItem(MACURL_KEY, url.trim()); macBaseUrl=url.trim(); }
@@ -440,7 +388,7 @@ function saveMacUrl(url){ localStorage.setItem(MACURL_KEY, url.trim()); macBaseU
 // ═══════════════════════════════════════════════════════════════
 // STATO GLOBALE
 // ═══════════════════════════════════════════════════════════════
-let books = [];
+let books = loadBooks();
 let filterStatus = 'all';
 let filterGenre  = 'all';
 let sortBy       = 'title';
@@ -692,7 +640,7 @@ function setRating(n){
   document.querySelectorAll('.star').forEach(s=>s.classList.toggle('on', Number(s.dataset.val)<=n));
 }
 
-async function saveEdit(){
+function saveEdit(){
   const id = document.getElementById('ef-_id').value;
   const idx = books.findIndex(b=>b._id===id);
   if(idx<0) return;
@@ -707,7 +655,7 @@ async function saveEdit(){
   updated.userRating    = document.getElementById('ef-userRating').value;
   updated._updated = Date.now();
   books[idx]=updated;
-  await saveBooks(books);
+  saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -715,10 +663,10 @@ async function saveEdit(){
   toast('📖 Libro aggiornato!');
 }
 
-async function deleteBook(id){
+function deleteBook(id){
   if(!confirm('Eliminare questo libro dalla biblioteca?')) return;
   books=books.filter(b=>b._id!==id);
-  await saveBooks(books);
+  saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -806,13 +754,13 @@ function addFromSearch(i){
   confirmAddBook(b);
 }
 
-async function confirmAddBook(b){
+function confirmAddBook(b){
   const dup = books.some(x=>(x.isbn13&&x.isbn13===b.isbn13)||(x.isbn10&&x.isbn10===b.isbn10)||
     (x.title&&x.title.toLowerCase()===(b.title||'').toLowerCase()&&x.authors===b.authors));
   if(dup&&!confirm('"'+b.title+'" sembra già presente. Aggiungere comunque?')) return;
   const book = {...b, _id:generateId(), _added:Date.now()};
   books.push(book);
-  await saveBooks(books);
+  saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -820,7 +768,7 @@ async function confirmAddBook(b){
   toast('📚 "'+b.title+'" aggiunto!');
 }
 
-async function addManual(){
+function addManual(){
   const title = document.getElementById('m-title').value.trim();
   if(!title){ toast('Inserisci il titolo','warn'); return; }
   const book = {
@@ -836,7 +784,7 @@ async function addManual(){
     remoteImageUrl:'', description:''
   };
   books.push(book);
-  await saveBooks(books);
+  saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -1183,7 +1131,7 @@ function importJSON(input){
   reader.readAsText(file,'utf-8');
 }
 
-async function mergeImport(newBooks){
+function mergeImport(newBooks){
   const existingIsbns=new Set(books.map(b=>b.isbn13).filter(Boolean));
   const existingTitles=new Set(books.map(b=>(b.title||'').toLowerCase()));
   const toAdd=newBooks.filter(b=>{
@@ -1192,7 +1140,7 @@ async function mergeImport(newBooks){
     return true;
   }).map(b=>({...b,_id:b._id||generateId()}));
   books=[...books,...toAdd];
-  await saveBooks(books);
+  saveBooks(books);
   dirty=true;
   closeModal();
   renderLibrary();
@@ -1438,7 +1386,7 @@ async function syncWithMac(){
     }
 
     books=merged;
-    await saveBooks(books);
+    saveBooks(books);
     dirty=false;
     updateStatusBar();
     renderLibrary();
@@ -1491,43 +1439,25 @@ function toast(msg,type,dur){
 // ═══════════════════════════════════════════════════════════════
 // INIT — asincrono per IndexedDB
 // ═══════════════════════════════════════════════════════════════
-async function initApp(){
-  try{
-    // Carica libri da IndexedDB (migra automaticamente da localStorage se presente)
-    books = await loadBooks();
-  }catch(e){
-    console.error('Errore caricamento libri:', e);
-    // Fallback: prova localStorage direttamente
-    try{
-      books = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
-    }catch(e2){
-      books = [];
-    }
-  }finally{
-    // Rimuovi spinner — sempre, anche in caso di errore
-    const overlay = document.getElementById('loading-overlay');
-    if(overlay) overlay.remove();
-  }
 
-  // Render iniziale
-  renderLibrary();
-  if(macBaseUrl) document.getElementById('mac-url-input').value=macBaseUrl;
 
-  // Rilevamento Mac in background
+
+// ═══════════════════════════════════════════════════════════════
+// INIT — sincrono, nessuno spinner
+// ═══════════════════════════════════════════════════════════════
+renderLibrary();
+if(macBaseUrl) document.getElementById('mac-url-input').value=macBaseUrl;
+
+detectMac().then(ok=>{
+  updateStatusBar();
+  if(ok&&dirty) syncWithMac();
+});
+setInterval(()=>{
   detectMac().then(ok=>{
     updateStatusBar();
-    if(ok&&dirty) syncWithMac();
+    if(ok&&dirty) syncWithMac().catch(()=>{});
   });
-  setInterval(()=>{
-    detectMac().then(ok=>{
-      updateStatusBar();
-      if(ok&&dirty) syncWithMac().catch(()=>{});
-    });
-  },30000);
-}
-
-initApp();
-
+},30000);
 </script>
 </body>
 </html>// ══════════════════════════════════════════════════════════════════════════
@@ -1783,7 +1713,7 @@ async function syncWithMac(){
     }
 
     books=merged;
-    await saveBooks(books);
+    saveBooks(books);
     dirty=false;
     updateStatusBar();
     renderLibrary();
@@ -1836,42 +1766,8 @@ function toast(msg,type,dur){
 // ═══════════════════════════════════════════════════════════════
 // INIT — asincrono per IndexedDB
 // ═══════════════════════════════════════════════════════════════
-async function initApp(){
-  try{
-    // Carica libri da IndexedDB (migra automaticamente da localStorage se presente)
-    books = await loadBooks();
-  }catch(e){
-    console.error('Errore caricamento libri:', e);
-    // Fallback: prova localStorage direttamente
-    try{
-      books = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
-    }catch(e2){
-      books = [];
-    }
-  }finally{
-    // Rimuovi spinner — sempre, anche in caso di errore
-    const overlay = document.getElementById('loading-overlay');
-    if(overlay) overlay.remove();
-  }
 
-  // Render iniziale
-  renderLibrary();
-  if(macBaseUrl) document.getElementById('mac-url-input').value=macBaseUrl;
 
-  // Rilevamento Mac in background
-  detectMac().then(ok=>{
-    updateStatusBar();
-    if(ok&&dirty) syncWithMac();
-  });
-  setInterval(()=>{
-    detectMac().then(ok=>{
-      updateStatusBar();
-      if(ok&&dirty) syncWithMac().catch(()=>{});
-    });
-  },30000);
-}
-
-initApp();
 
 </script>
 </body>
