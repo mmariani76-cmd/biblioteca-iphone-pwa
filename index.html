@@ -845,28 +845,28 @@ async function searchBooks(query, byIsbn){
   try{
     const q = isIsbn ? `isbn:${cleanIsbn}` : query;
     const r = await fetch(
-      `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=8`,
+      `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=8&key=AIzaSyBQYbGCOXYG-NSBOI-TEGN_22vcuHokDKI`,
       {signal:AbortSignal.timeout(8000)}
     );
     if(r.ok){
       const data = await r.json();
+      if(data.error) throw new Error('Google Books error: '+data.error.code);
       if(data.items && data.items.length>0) return data.items.map(mapGoogleBook);
     }
   }catch(e){}
 
-  // 4. Open Library ricerca testo libero (fallback finale)
-  if(!isIsbn){
-    try{
-      const r = await fetch(
-        `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=8`,
-        {signal:AbortSignal.timeout(8000)}
-      );
-      if(r.ok){
-        const data = await r.json();
-        if(data.docs && data.docs.length>0) return data.docs.map(mapOpenLibraryDoc);
-      }
-    }catch(e){}
-  }
+  // 4. Open Library ricerca testo libero (fallback finale — anche per ISBN se Google Books ha fallito)
+  try{
+    const q = isIsbn ? cleanIsbn : query;
+    const r = await fetch(
+      `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=8`,
+      {signal:AbortSignal.timeout(8000)}
+    );
+    if(r.ok){
+      const data = await r.json();
+      if(data.docs && data.docs.length>0) return data.docs.map(mapOpenLibraryDoc);
+    }
+  }catch(e){}
 
   return [];
 }
