@@ -337,7 +337,7 @@ const FIELD_LABELS = {
 function generateId(){ return Date.now().toString(36)+Math.random().toString(36).substr(2,9); }
 function statusLabel(s){ return {read:'Letto',reading:'In lettura',unread:'Da leggere',dnf:'Abbandonato'}[s]||'Da leggere'; }
 function statusClass(s){ return s==='read'?'st-read':s==='reading'?'st-reading':s==='dnf'?'st-dnf':''; }
-function getBookCover(b){ return b.remoteImageUrl||b.thumbnailRemoteImageUrl||null; }
+function getBookCover(b){ const u=b.remoteImageUrl||b.thumbnailRemoteImageUrl||null; return u?u.replace(/^http:\/\//,'https://'):null; }
 function formatAuthors(a){
   if(!a) return 'Autore sconosciuto';
   return a.split(';').map(x=>{ const p=x.trim().split(','); return p.length===2?`${p[1].trim()} ${p[0].trim()}`:x.trim(); }).join(', ');
@@ -941,8 +941,8 @@ function mapGoogleBook(item){
     languages:v.language||'',
     categories:(v.categories||[]).join(';'),
     description:v.description||'',
-    remoteImageUrl:coverUrl?coverUrl.replace('zoom=1','zoom=3').replace('&edge=curl',''):'',
-    thumbnailRemoteImageUrl:coverUrl,
+    remoteImageUrl:coverUrl?coverUrl.replace('zoom=1','zoom=3').replace('&edge=curl','').replace(/^http:\/\//,'https://'):'',
+    thumbnailRemoteImageUrl:coverUrl?coverUrl.replace(/^http:\/\//,'https://'):'',
     externalLink:v.infoLink||'',
     readingStatus:'unread',
   };
