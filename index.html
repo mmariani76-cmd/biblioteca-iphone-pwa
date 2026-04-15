@@ -1450,7 +1450,7 @@ async function searchAndPropose(isbn){
       res.innerHTML =
         '<div style="padding:12px;background:var(--bg);border-radius:10px;margin-bottom:10px">' +
           '<div style="display:flex;gap:10px;margin-bottom:10px">' +
-            '<div class="result-cover">' + (cover ? '<img src="' + esc(cover) + '" onerror="this.style.display='none'">' : '') + '</div>' +
+            '<div class="result-cover">' + (cover ? '<img src="' + esc(cover) + '" onerror="this.style.display=\'none\'">' : '') + '</div>' +
             '<div class="result-info">' +
               '<div class="result-title">' + esc(b.title) + '</div>' +
               '<div class="result-meta">' + esc(formatAuthors(b.authors)) + (b.releaseYear ? ' · ' + b.releaseYear : '') + '</div>' +
