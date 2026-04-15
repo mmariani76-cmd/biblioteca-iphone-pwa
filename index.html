@@ -1411,6 +1411,9 @@ async function searchAndPropose(isbn){
     // Apri il modal di aggiunta con la scheda ricerca
     openAddModal();
 
+    // Attendi che il DOM aggiorni il modal prima di cercarne gli elementi
+    await new Promise(r => setTimeout(r, 0));
+
     // Compila il campo di ricerca con l'ISBN scansionato
     const input = document.getElementById('modal-search-input');
     if(input) input.value = isbn;
